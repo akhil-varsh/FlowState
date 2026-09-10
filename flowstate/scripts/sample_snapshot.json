@@ -1,0 +1,35 @@
+{
+  "id": "11111111-1111-1111-1111-111111111111",
+  "timestamp": "2026-08-23T10:32:00Z",
+  "trigger": "manual",
+  "workspace": {
+    "root": "/home/user/proj",
+    "name": "proj",
+    "git": {
+      "branch": "fix/token-refresh",
+      "dirty_files": ["auth.py", "tests/test_auth.py"],
+      "diff_summary": "auth.py @@ refresh_token(); test_auth.py @@ test_refresh_expiry()",
+      "recent_commits": ["add JWT validation", "wip: refresh flow"]
+    }
+  },
+  "editor": {
+    "active_file": "auth.py",
+    "cursor": { "line": 142, "col": 8 },
+    "selection": "payload['exp']",
+    "open_files": ["auth.py", "tests/test_auth.py", "config.py"],
+    "recently_edited": ["auth.py:130-145"]
+  },
+  "terminal": {
+    "recent_commands": [
+      { "cmd": "pytest tests/test_auth.py", "exit_code": 1, "output_tail": "KeyError: 'exp' (test_refresh_expiry)" }
+    ]
+  },
+  "diagnostics": [
+    { "file": "auth.py", "line": 142, "severity": "error", "message": "possibly unbound: exp" }
+  ],
+  "ambient": {
+    "active_app": "Chrome",
+    "clipboard_recent": ["jwt.decode(token, ...)"],
+    "browser_tabs": ["RFC 7519 JWT spec", "PyJWT docs"]
+  }
+}

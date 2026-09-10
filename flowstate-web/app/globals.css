@@ -1,0 +1,198 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   FlowState — design tokens
+   "lamplight in the dark": warm amber accent on deep slate.
+   next-themes toggles `.dark` on <html>; system pref resolves
+   to the same class, so light is the bare :root palette.
+   ============================================================ */
+@layer base {
+  :root {
+    --bg: #eceff3;
+    --bg-tint: #e4e9ef;
+    --surface: #fafbfc;
+    --surface-2: #f1f4f8;
+    --surface-3: #e9eef3;
+    --ink: #161a21;
+    --ink-soft: #454e5c;
+    --ink-faint: #788393;
+    --line: #dbe1e9;
+    --line-strong: #c6ceda;
+    --accent: #9e6408;
+    --accent-2: #b5730c;
+    --on-accent: #fff8ec;
+    --accent-glow: rgba(181, 115, 12, 0.16);
+    --accent-wash: rgba(181, 115, 12, 0.08);
+    --cyan: #0c6e7a;
+    --cyan-soft: rgba(12, 110, 122, 0.1);
+    --good: #0f7a4e;
+    --grid-line: rgba(22, 26, 33, 0.045);
+    --shadow: 0 1px 2px rgba(19, 26, 38, 0.06), 0 12px 32px -12px rgba(19, 26, 38, 0.16);
+    --shadow-lg: 0 2px 6px rgba(19, 26, 38, 0.08), 0 40px 80px -32px rgba(19, 26, 38, 0.28);
+    --hero-glow: radial-gradient(60% 55% at 72% 26%, rgba(181, 115, 12, 0.14), transparent 70%);
+  }
+
+  .dark {
+    --bg: #0b0d12;
+    --bg-tint: #0e1118;
+    --surface: #12151c;
+    --surface-2: #171b24;
+    --surface-3: #1d2230;
+    --ink: #edeff3;
+    --ink-soft: #a8b0be;
+    --ink-faint: #6c7686;
+    --line: #232936;
+    --line-strong: #313949;
+    --accent: #f2b34e;
+    --accent-2: #f5c069;
+    --on-accent: #1a1206;
+    --accent-glow: rgba(242, 179, 78, 0.22);
+    --accent-wash: rgba(242, 179, 78, 0.09);
+    --cyan: #6ed4cb;
+    --cyan-soft: rgba(110, 212, 203, 0.12);
+    --good: #4fd08a;
+    --grid-line: rgba(255, 255, 255, 0.028);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.6);
+    --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.5), 0 48px 96px -36px rgba(0, 0, 0, 0.8);
+    --hero-glow: radial-gradient(58% 52% at 72% 24%, rgba(242, 179, 78, 0.2), transparent 68%);
+  }
+
+  * {
+    border-color: var(--line);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-plex-sans), system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-fraunces), Georgia, serif;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: var(--accent-wash);
+    color: var(--ink);
+  }
+
+  :focus-visible {
+    outline: 2.5px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 5px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+/* ---- Reusable component classes ---- */
+@layer components {
+  .wrap {
+    width: 100%;
+    max-width: 1180px;
+    margin-inline: auto;
+    padding-inline: 28px;
+  }
+
+  .eyebrow {
+    font-family: var(--font-plex-mono), monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-plex-sans), sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 12px 18px;
+    border-radius: 10px;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: transform 0.14s ease, background 0.16s, border-color 0.16s, color 0.16s, filter 0.16s;
+    white-space: nowrap;
+  }
+  .btn:active {
+    transform: translateY(1px);
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: var(--shadow);
+  }
+  .btn-primary:hover {
+    filter: brightness(1.06);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--line-strong);
+  }
+  .btn-ghost:hover {
+    background: var(--surface-2);
+    border-color: var(--ink-faint);
+  }
+  .btn-sm {
+    padding: 9px 14px;
+    font-size: 14px;
+    border-radius: 9px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-family: var(--font-plex-mono), monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding: 7px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+  }
+}
+
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .grid-backdrop {
+    background-image: linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+}

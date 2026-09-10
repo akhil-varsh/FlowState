@@ -1,0 +1,50 @@
+name: Deploy
+
+# Production deploy runs only after CI passes on main. Wire in your host of
+# choice (Vercel, a container registry, or a static export) at the marked step.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Build & deploy
+    runs-on: ubuntu-latest
+    # Only deploy if the triggering CI run succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    environment:
+      name: production
+      url: https://flowstate.dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (standalone)
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+      # ---------------------------------------------------------------
+      # Replace this step with your deploy target. Two common options:
+      #
+      #   Vercel:
+      #     - run: npx vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
+      #
+      #   Container image (uses the standalone output in .next/standalone):
+      #     - uses: docker/build-push-action@v6
+      #       with: { push: true, tags: ghcr.io/${{ github.repository }}:latest }
+      # ---------------------------------------------------------------
+      - name: Deploy placeholder
+        run: echo "Build succeeded. Add your production deploy step here."

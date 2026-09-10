@@ -1,0 +1,32 @@
+# FlowState daemon dependencies.
+# Added across phases: ollama (P3), pygit2 (P2), pywin32/pyobjc (P5),
+# chromadb (P6).
+
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+aiosqlite>=0.20
+websockets>=12.0
+
+# Tier 2 git capture. If a wheel isn't available for your Python, the collector
+# falls back to shelling out to the `git` CLI automatically.
+pygit2>=1.14
+
+# Local inference (Phase 3). Talks to the local Ollama server only.
+ollama>=0.3.0
+
+# Tier 3 ambient capture (Phase 5): active window title + process, clipboard.
+# Platform-specific; capture degrades gracefully if unavailable.
+pywin32>=306; sys_platform == "win32"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+
+# Semantic history search (Phase 6). ChromaDB ships an ONNX-Runtime build of
+# all-MiniLM-L6-v2 as its default embedder — no PyTorch needed (light, CPU-only,
+# and there are no torch wheels for Python 3.14). The ~80 MB model downloads once
+# then runs fully offline. If absent, /search degrades to empty; restore/capture
+# are unaffected. Vectors are used ONLY here, never on the restore path.
+chromadb>=0.5
+
+# Optional at-rest encryption of the snapshot payload (Phase 7). Only used when
+# FLOWSTATE_ENCRYPTION_KEY is set; storage falls back to plaintext without it.
+cryptography>=42

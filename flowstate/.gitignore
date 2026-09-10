@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dashboard/dist/
+dashboard/.next/
+dashboard/out/
+next-env.d.ts
+extension/out/
+extension/*.vsix
+
+# FlowState local data (ephemeral snapshots, never committed)
+*.db
+*.db-journal
+*.db-wal
+data/
+dist/
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
