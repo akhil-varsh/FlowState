@@ -72,6 +72,44 @@ def _get_int(name: str, default: int) -> int:
     return int(v) if v is not None else default
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    env = os.environ.get(f"FLOWSTATE_{name}")
+    raw = env if env is not None else _FILE.get(name.lower())
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A comma-separated list from env/file, normalized to lowercase items."""
+    env = os.environ.get(f"FLOWSTATE_{name}")
+    raw = env if env is not None else _FILE.get(name.lower())
+    if raw is None:
+        return default
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    else:
+        items = str(raw).split(",")
+    cleaned = tuple(s.strip().lower() for s in items if s.strip())
+    return cleaned or default
+
+
+# Communication/meeting apps whose foreground presence marks an interruption.
+_DEFAULT_MEETING_APPS = (
+    "teams.exe",
+    "ms-teams.exe",
+    "zoom.exe",
+    "slack.exe",
+    "webexmta.exe",
+    "webex.exe",
+    "discord.exe",
+    "skype.exe",
+    "meet",  # Google Meet (browser tab title contains "Meet")
+)
+
+
 @dataclass(frozen=True)
 class Config:
     # --- Networking: localhost ONLY, never 0.0.0.0 -----------------------
@@ -116,6 +154,55 @@ class Config:
     # environment variable; a passphrase written into config.toml is only as
     # private as that file. Empty means encryption is off (plaintext).
     encryption_key: str = field(default_factory=lambda: _get_str("ENCRYPTION_KEY", ""))
+
+    # --- Continuous observer (Phase 10) ----------------------------------
+    # A background loop that samples the active window + clipboard on an interval
+    # so cross-application context (VS Code -> Excel -> Word) can be reconstructed.
+    # Event-driven capture from the extension still exists; this adds the OS-wide,
+    # multi-app tier the blueprint needs. It is gated by the recording switch AND
+    # the CPU governor below.
+    observer_enabled: bool = field(default_factory=lambda: _get_bool("OBSERVER_ENABLED", True))
+    observer_interval_seconds: int = field(
+        default_factory=lambda: _get_int("OBSERVER_INTERVAL_SECONDS", 25)
+    )
+
+    # --- Interruption detection (Phase 10) -------------------------------
+    # An interruption fires on: OS input idle >= idle threshold, the foreground
+    # switching to a meeting app, or a screen-lock event. When one fires, the
+    # passive snapshots in the preceding buffer window are flagged so the
+    # restoration engine can reconstruct exactly what you were doing.
+    interruption_idle_seconds: int = field(
+        default_factory=lambda: _get_int("INTERRUPTION_IDLE_SECONDS", 120)
+    )
+    interruption_buffer_seconds: int = field(
+        default_factory=lambda: _get_int("INTERRUPTION_BUFFER_SECONDS", 600)
+    )
+    meeting_apps: tuple[str, ...] = field(
+        default_factory=lambda: _get_list("MEETING_APPS", _DEFAULT_MEETING_APPS)
+    )
+
+    # --- Resource governor (Phase 10) ------------------------------------
+    # Before any local SLM synthesis, if host CPU exceeds this percentage the
+    # daemon defers generation (context is preserved) so it never fights the IDE.
+    cpu_defer_threshold: int = field(
+        default_factory=lambda: _get_int("CPU_DEFER_THRESHOLD", 80)
+    )
+
+    # --- Data sanitization (Phase 10) ------------------------------------
+    # Mask emails, keys, tokens, passwords in captured text BEFORE it is stored
+    # or embedded. On by default; enterprises should leave it on.
+    sanitize_enabled: bool = field(default_factory=lambda: _get_bool("SANITIZE_ENABLED", True))
+
+    # --- End-of-day manager report cloud sync (Phase 10) -----------------
+    # ONLY the generated high-level summary string is pushed to the cloud (a
+    # Supabase REST endpoint or a mock). Raw snapshots/code NEVER leave the host.
+    # Empty URL or disabled flag = fully local, nothing is sent.
+    cloud_report_enabled: bool = field(
+        default_factory=lambda: _get_bool("CLOUD_REPORT_ENABLED", False)
+    )
+    cloud_report_url: str = field(default_factory=lambda: _get_str("CLOUD_REPORT_URL", ""))
+    cloud_report_key: str = field(default_factory=lambda: _get_str("CLOUD_REPORT_KEY", ""))
+    report_user: str = field(default_factory=lambda: _get_str("REPORT_USER", ""))
 
     @property
     def db_path(self) -> Path:
@@ -171,6 +258,28 @@ _DEFAULT_CONFIG_TOML = """\
 # Set a passphrase to encrypt the snapshot payload on disk. A passphrase here is
 # only as private as this file; prefer the FLOWSTATE_ENCRYPTION_KEY env var.
 # encryption_key = ""
+
+# --- Continuous observer (cross-application context) ---
+# observer_enabled = true
+# observer_interval_seconds = 25    # how often the active window/clipboard is sampled
+
+# --- Interruption detection ---
+# interruption_idle_seconds = 120   # OS input idle that counts as an interruption (2 min)
+# interruption_buffer_seconds = 600 # size of the pre-interruption lookback window (10 min)
+# meeting_apps = "teams.exe,zoom.exe,slack.exe"  # foreground = interruption
+
+# --- Resource governor ---
+# cpu_defer_threshold = 80          # defer SLM synthesis while host CPU is above this %
+
+# --- Data sanitization ---
+# sanitize_enabled = true           # mask emails/keys/tokens/passwords before store + embed
+
+# --- End-of-day manager report cloud sync ---
+# Only the high-level summary string is ever sent. Raw snapshots never leave the host.
+# cloud_report_enabled = false
+# cloud_report_url = ""             # Supabase REST endpoint (or a mock) for manager reports
+# cloud_report_key = ""             # bearer/apikey for the endpoint, if required
+# report_user = ""                  # identifier attached to the pushed summary
 """
 
 

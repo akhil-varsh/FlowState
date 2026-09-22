@@ -2,6 +2,11 @@ import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { CodeLine } from "@/components/copy-button";
 
+// Public download URL for the packaged installer. Set NEXT_PUBLIC_DOWNLOAD_URL
+// (e.g. a Supabase Storage public URL) to enable the direct download; when unset
+// the button falls back to the install docs.
+const DOWNLOAD_URL = process.env.NEXT_PUBLIC_DOWNLOAD_URL ?? "";
+
 const STEPS = [
   {
     n: "1",
@@ -72,11 +77,24 @@ export function InstallCta() {
               </div>
             ))}
           </div>
-          <div className="mt-6">
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            {DOWNLOAD_URL ? (
+              <a href={DOWNLOAD_URL} download className="btn btn-primary">
+                ↓ Download for Windows · .exe
+              </a>
+            ) : (
+              <Link href="/docs/installation" className="btn btn-primary">
+                ↓ Download for Windows · .exe
+              </Link>
+            )}
             <Link href="/guide" className="btn btn-ghost">
               Full getting-started guide →
             </Link>
           </div>
+          <p className="mt-3 text-[13px] text-ink-faint">
+            Windows 10/11 · x64 · ~70 MB · per-user install (no admin). Unsigned build — if
+            SmartScreen appears, choose “More info → Run anyway.”
+          </p>
         </Reveal>
       </div>
     </section>

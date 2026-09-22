@@ -25,6 +25,7 @@ position. Every stage runs on `127.0.0.1`. **No data ever leaves the machine.**
 | 7 | Hardening (TTL, encryption, offline demo) | ✅ done |
 | 8 | Packaging (installer · autostart task · .vsix · config file) | ✅ done |
 | 9 | Desktop widget + recording on/off toggle | ✅ done |
+| 10 | Zero-Trust Cognitive Restoration (observer · interruption buffer · cross-app restore · daily report · sanitizer · CPU governor) | ✅ done |
 
 ---
 
@@ -354,6 +355,49 @@ sleep-driven sweeper. Measured idle on a 12-core Windows laptop:
    every server bound to `127.0.0.1`.
 
 ---
+
+## Phase 10 — Zero-Trust Cognitive Restoration (enterprise)
+
+Phase 10 extends the editor-centric restorer into a full-day, cross-application
+record for knowledge workers, while keeping the air-gapped core. Everything below
+runs on `127.0.0.1`; the only thing that may ever leave the host is an opt-in
+manager summary string.
+
+- **Continuous observer** (`daemon/observer.py`) — a sleep-driven loop samples the
+  active window + clipboard every `observer_interval_seconds` (default 25s) and
+  stores them as `passive_snapshot`s. This is the OS-wide tier that lets the
+  restorer narrate work spanning VS Code → Excel → Word. It never becomes a
+  restore target and never shows in the dev timeline.
+- **Interruption detection + buffer** (`daemon/interruption.py`) — the observer
+  fires on OS input idle (default 2 min), a foreground switch to a meeting app
+  (`meeting_apps`), or a screen lock. On a trigger it flags the passive snapshots
+  in the preceding `interruption_buffer_seconds` window as `is_interruption_buffer`.
+- **Cross-application restoration** — `POST /restore-context` reads the flagged
+  buffer and asks the local model to connect the rapid context switches into one
+  intent narrative ("what were you doing, across which tools, next step").
+- **Deep Start/End-of-Day captures** — `POST /start-day` and `POST /end-day` take a
+  deep workspace snapshot (git status, open files, a bounded on-disk excerpt of the
+  active file tagged with its architectural role).
+- **End-of-day manager report** — `POST /end-day` (or `GET /report/daily`) aggregates
+  the day (start baseline → activity → end state) and generates a plain-English
+  1-page report: objectives, files/components altered, cross-tool tasks, blockers.
+- **Data sanitizer** (`daemon/sanitize.py`) — every captured free-text field is
+  masked for emails, API keys, JWTs, bearer tokens, passwords and card-shaped
+  numbers **before** it is stored or embedded. On by default (`sanitize_enabled`).
+- **CPU governor** (`daemon/resource.py`) — before any local SLM synthesis, if host
+  CPU is above `cpu_defer_threshold` (default 80%) generation is deferred with a
+  `{"status": "deferred", ...}` response, so FlowState never fights the IDE.
+- **Privacy-first cloud sync** (`daemon/report.py`) — opt-in and off by default. When
+  `cloud_report_enabled` + `cloud_report_url` are set, ONLY the generated summary
+  string (never a snapshot, code, or clipboard) is POSTed to a Supabase/mock endpoint.
+
+New endpoints: `POST /start-day`, `POST /end-day`, `GET /report/daily`,
+`POST /restore-context`, `GET /observer/status`, `POST /observer`. `GET /health` now
+reports `sanitize`, `resource`, `observer`, and `cloud_report` blocks. The dashboard
+gains a Start/End-Day + Restore-Context action bar, a live monitoring card (CPU,
+active window, interruption state), a cross-application restore card, and a manager
+report viewer. Regression tests live in `daemon/tests/test_phase10.py`
+(`python -m daemon.tests.test_phase10`).
 
 ## Architecture (target)
 

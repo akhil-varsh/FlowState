@@ -20,8 +20,11 @@ import json
 import re
 from typing import Optional
 
+from datetime import timezone
+from typing import List
+
 from .config import config
-from .models import Snapshot, Summary
+from .models import ActivityEvent, ContextRestoration, DailyReport, Snapshot, Summary
 
 try:  # pragma: no cover - import guard
     from ollama import Client as _OllamaClient
@@ -272,6 +275,287 @@ def summary_digest(summary: Summary) -> str:
     if summary.open_threads:
         parts.append("Threads: " + "; ".join(summary.open_threads[:4]))
     return " ".join(p.strip() for p in parts if p and p.strip())
+
+
+# ==========================================================================
+# Phase 10 — cross-application restoration + end-of-day manager report
+# ==========================================================================
+RESTORE_CONTEXT_SYSTEM = (
+    "You are a context-restoration assistant. You are given a chronological "
+    "timeline of a developer's activity across multiple applications in the "
+    "minutes before an interruption (a meeting, a call, or stepping away). "
+    "Connect the rapid context switches into ONE unified intent narrative — not "
+    "isolated events. Explain what they were doing, across which tools, and the "
+    "immediate next step. Be concrete and brief. Output only JSON matching the schema."
+)
+
+DAILY_REPORT_SYSTEM = (
+    "You are writing a concise, plain-English end-of-day progress report for a "
+    "manager. You are given a developer's start-of-day baseline, a timeline of "
+    "their activity across applications, and their end-of-day state. Summarize "
+    "what was accomplished — objectives tackled, files/components changed (in "
+    "plain English), cross-tool tasks performed, and end-of-day status/blockers. "
+    "Do not invent details not supported by the input. Output only JSON matching the schema."
+)
+
+
+def _fmt_ts(dt) -> str:
+    try:
+        return dt.astimezone(timezone.utc).strftime("%H:%M:%S")
+    except Exception:
+        return ""
+
+
+def render_activity_timeline(snaps: List[Snapshot]) -> str:
+    """A compact chronological view of cross-application activity for the model."""
+    lines: List[str] = []
+    for s in snaps:
+        t = _fmt_ts(s.timestamp)
+        a = s.ambient
+        detail = ""
+        if s.editor.active_file:
+            detail = f'FILE "{s.editor.active_file}:{s.editor.cursor.line}"'
+        app = a.active_app or (s.workspace.name or "activity")
+        seg = f"[{t}] APP: {app}"
+        if a.foreground_seconds:
+            seg += f" | DUR: {int(a.foreground_seconds)}s"
+        if detail:
+            seg += f" | {detail}"
+        if a.clipboard_recent:
+            seg += f' | CLIPBOARD: "{a.clipboard_recent[0][:80]}"'
+        lines.append(seg)
+    return "\n".join(lines)
+
+
+def to_activity_events(snaps: List[Snapshot]) -> List[ActivityEvent]:
+    """The structured timeline returned to the dashboard alongside the narrative."""
+    events: List[ActivityEvent] = []
+    for s in snaps:
+        clip = s.ambient.clipboard_recent[0] if s.ambient.clipboard_recent else ""
+        detail = ""
+        if s.editor.active_file:
+            detail = f"{s.editor.active_file}:{s.editor.cursor.line}"
+        events.append(
+            ActivityEvent(
+                timestamp=s.timestamp,
+                app=s.ambient.active_app or s.workspace.name,
+                clipboard=clip,
+                detail=detail,
+                foreground_seconds=s.ambient.foreground_seconds,
+            )
+        )
+    return events
+
+
+def restore_context(snaps: List[Snapshot], model: Optional[str] = None) -> ContextRestoration:
+    """Synthesize a cross-application restoration narrative from the buffer.
+
+    Always returns a ContextRestoration — falls back to a deterministic summary
+    built from the timeline if the local model is unavailable.
+    """
+    if not snaps:
+        return ContextRestoration(
+            headline="No recent activity to restore.",
+            narrative=["Nothing was captured in the lookback window."],
+        )
+    model_name = model or config.model
+    try:
+        return _restore_context_with_model(snaps, model_name)
+    except Exception as err:
+        print(f"[FlowState] restore_context fallback ({type(err).__name__}: {err})")
+        return _fallback_restoration(snaps)
+
+
+def _restore_context_with_model(snaps: List[Snapshot], model_name: str) -> ContextRestoration:
+    client = _client()
+    schema = ContextRestoration.model_json_schema()
+    prompt = (
+        "Here is my cross-application activity timeline just before I was "
+        "interrupted. Reconstruct what I was doing as JSON.\n\n"
+        + render_activity_timeline(snaps)
+    )
+    resp = client.chat(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": RESTORE_CONTEXT_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        format=schema,
+        options={"temperature": _TEMPERATURE},
+        keep_alive=config.ollama_keep_alive,
+    )
+    content = _THINK_RE.sub("", _extract_content(resp)).strip()
+    return ContextRestoration.model_validate(json.loads(content))
+
+
+def _distinct_apps(snaps: List[Snapshot]) -> List[str]:
+    apps: List[str] = []
+    for s in snaps:
+        app = s.ambient.active_app or s.workspace.name
+        if app and (not apps or apps[-1] != app) and app not in apps:
+            apps.append(app)
+    return apps
+
+
+def _fallback_restoration(snaps: List[Snapshot]) -> ContextRestoration:
+    apps = _distinct_apps(snaps)
+    files = [s.editor.active_file for s in snaps if s.editor.active_file]
+    clips = [s.ambient.clipboard_recent[0] for s in snaps if s.ambient.clipboard_recent]
+
+    narrative: List[str] = []
+    if apps:
+        narrative.append("Worked across: " + " -> ".join(apps[:6]) + ".")
+    if files:
+        uniq = list(dict.fromkeys(files))
+        narrative.append("Touched files: " + ", ".join(uniq[:5]) + ".")
+    if clips:
+        narrative.append(f'Recent clipboard: "{clips[-1][:100]}".')
+    if not narrative:
+        narrative = ["Activity was captured but no distinguishing detail was recorded."]
+
+    last_app = apps[-1] if apps else "your last task"
+    return ContextRestoration(
+        headline=f"You were working in {apps[0]}" if apps else "Where you left off",
+        narrative=narrative,
+        tools_used=apps[:6],
+        next_step=f"Resume in {last_app}.",
+    )
+
+
+def daily_report(
+    start: Optional[Snapshot],
+    activity: List[Snapshot],
+    end: Optional[Snapshot],
+    model: Optional[str] = None,
+) -> DailyReport:
+    """Generate the manager-facing end-of-day report.
+
+    Robust to model quality: a deterministic base report (always populated from
+    captured facts) is computed first, then the local model's output is merged in
+    where it genuinely adds value. Factual fields (files changed, git blockers)
+    stay deterministic; the model contributes prose objectives / cross-tool
+    narrative when it produces them. If the model is unavailable, the base report
+    stands on its own.
+    """
+    model_name = model or config.model
+    base = _fallback_report(start, activity, end)
+    try:
+        llm = _daily_report_with_model(start, activity, end, model_name)
+    except Exception as err:
+        print(f"[FlowState] daily_report fallback ({type(err).__name__}: {err})")
+        return base
+    return DailyReport(
+        # Prose fields: prefer the model when it produced something, else the base.
+        primary_objectives=llm.primary_objectives or base.primary_objectives,
+        cross_tool_tasks=llm.cross_tool_tasks or base.cross_tool_tasks,
+        # Factual fields: keep deterministic (accurate) unless the base is empty.
+        files_components_altered=base.files_components_altered or llm.files_components_altered,
+        status_and_blockers=base.status_and_blockers or llm.status_and_blockers,
+    )
+
+
+def _render_state(label: str, snap: Optional[Snapshot]) -> str:
+    if snap is None:
+        return f"{label}: (not captured)"
+    parts = [f"{label}:"]
+    ws = snap.workspace
+    if ws.name:
+        parts.append(f"  workspace={ws.name}")
+    if ws.git:
+        if ws.git.branch:
+            parts.append(f"  branch={ws.git.branch}")
+        if ws.git.dirty_files:
+            parts.append("  uncommitted=" + ", ".join(ws.git.dirty_files[:8]))
+    if snap.editor.active_file:
+        parts.append(
+            f"  active_file={snap.editor.active_file} ({snap.editor.file_role or 'source'})"
+        )
+    return "\n".join(parts)
+
+
+def _daily_report_with_model(start, activity, end, model_name) -> DailyReport:
+    client = _client()
+    schema = DailyReport.model_json_schema()
+    prompt = (
+        "Summarize my workday as a manager report in JSON.\n\n"
+        + _render_state("START OF DAY", start)
+        + "\n\nACTIVITY TIMELINE:\n"
+        + (render_activity_timeline(activity) or "  (no continuous activity recorded)")
+        + "\n\n"
+        + _render_state("END OF DAY", end)
+    )
+    resp = client.chat(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": DAILY_REPORT_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        format=schema,
+        options={"temperature": _TEMPERATURE},
+        keep_alive=config.ollama_keep_alive,
+    )
+    content = _THINK_RE.sub("", _extract_content(resp)).strip()
+    return DailyReport.model_validate(json.loads(content))
+
+
+def _fallback_report(start, activity, end) -> DailyReport:
+    apps = _distinct_apps(activity)
+    files = list(
+        dict.fromkeys(
+            [s.editor.active_file for s in activity if s.editor.active_file]
+            + ([end.editor.active_file] if end and end.editor.active_file else [])
+        )
+    )
+    end_dirty = end.workspace.git.dirty_files if (end and end.workspace.git) else []
+
+    objectives = []
+    if end and end.workspace.name:
+        objectives.append(f"Progressed work in {end.workspace.name}.")
+    if files:
+        objectives.append("Focused on: " + ", ".join(files[:5]) + ".")
+
+    cross_tool = []
+    non_code = [a for a in apps if a and "code" not in a.lower()]
+    if non_code:
+        cross_tool.append("Used other tools: " + ", ".join(non_code[:5]) + ".")
+
+    blockers = []
+    if end_dirty:
+        blockers.append("Uncommitted at end of day: " + ", ".join(end_dirty[:8]) + ".")
+
+    return DailyReport(
+        primary_objectives=objectives or ["Continued development work."],
+        files_components_altered=files[:10],
+        cross_tool_tasks=cross_tool,
+        status_and_blockers=blockers or ["No blockers recorded."],
+    )
+
+
+def report_to_markdown(report: DailyReport, date: str = "", workspace: str = "") -> str:
+    """Render the structured report as a 1-page Markdown document for the viewer."""
+    def _section(title: str, items: List[str]) -> str:
+        if not items:
+            return f"## {title}\n\n_None recorded._\n"
+        body = "\n".join(f"- {i}" for i in items)
+        return f"## {title}\n\n{body}\n"
+
+    head = "# End-of-Day Progress Report\n"
+    meta = []
+    if date:
+        meta.append(f"**Date:** {date}")
+    if workspace:
+        meta.append(f"**Workspace:** {workspace}")
+    meta_line = ("  \n".join(meta) + "\n") if meta else ""
+    return "\n".join(
+        [
+            head,
+            meta_line,
+            _section("Primary Objectives Tackled", report.primary_objectives),
+            _section("Files & Components Altered", report.files_components_altered),
+            _section("Cross-Tool Tasks Performed", report.cross_tool_tasks),
+            _section("End-of-Day Status & Blockers", report.status_and_blockers),
+        ]
+    )
 
 
 def health() -> dict:

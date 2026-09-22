@@ -30,3 +30,20 @@ chromadb>=0.5
 # Optional at-rest encryption of the snapshot payload (Phase 7). Only used when
 # FLOWSTATE_ENCRYPTION_KEY is set; storage falls back to plaintext without it.
 cryptography>=42
+
+# Resource governor (Phase 10): reads host CPU so SLM synthesis is deferred while
+# the machine is busy. If absent, the governor reports 0% and never defers.
+psutil>=5.9
+
+# End-of-day manager report cloud sync (Phase 10). Only used when cloud sync is
+# explicitly enabled; sends the summary string only. If absent, sync is a no-op.
+requests>=2.31
+
+# Optional Postgres/Supabase sink for the manager report (pure-Python driver, no
+# native build — works on Python 3.14). Only used when cloud_report_url is a
+# postgresql:// connection string. Summary only; raw snapshots never leave.
+pg8000>=1.30
+
+# Downloadable, formatted report PDFs (Phase 10). Pure-Python PDF generation,
+# no native build. Powers /report/pdf and /report/monthly.pdf.
+fpdf2>=2.7

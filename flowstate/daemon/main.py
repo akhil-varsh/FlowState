@@ -14,17 +14,34 @@ import asyncio
 import contextlib
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .capture import assemble
 from .config import config
-from . import crypto, inference, maintenance, recording
+from . import (
+    crypto,
+    inference,
+    maintenance,
+    observer,
+    pdf,
+    profiler,
+    recording,
+    report,
+    resource,
+    sanitize,
+)
 from .models import (
+    DailyReport,
+    DailyReportResponse,
+    DeepCaptureResponse,
+    EventType,
     HistoryItem,
+    ObserverStatus,
     RecordingState,
     RehydrateAck,
     RehydrateRequest,
+    RestoreContextResponse,
     RestoreResponse,
     SearchHit,
     Snapshot,
@@ -47,12 +64,17 @@ async def lifespan(app: FastAPI):
     # Background TTL sweeper: enforces ephemerality across hot + cold stores.
     # Sleep-driven, so it adds no idle CPU cost.
     purge_task = asyncio.create_task(maintenance.run_purge_loop(store, search_index))
+    # Continuous observer (Phase 10): OS-wide cross-application sampling +
+    # interruption detection. Also sleep-driven; respects the recording switch
+    # and the CPU governor.
+    observer_task = asyncio.create_task(observer.run_loop(store, search_index))
     try:
         yield
     finally:
-        purge_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await purge_task
+        for task in (purge_task, observer_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(
@@ -116,6 +138,10 @@ async def health() -> dict:
         "inference": inference.health(),
         "search": search_index.health(),
         "security": crypto.status(),
+        "sanitize": sanitize.status(),
+        "resource": resource.status(),
+        "observer": {"enabled": observer.is_enabled(), "interval": config.observer_interval_seconds},
+        "cloud_report": report.status(),
     }
 
 
@@ -136,6 +162,8 @@ async def post_snapshot(snapshot: Snapshot) -> SnapshotAck:
         return SnapshotAck(id=snapshot.id, stored=False, paused=True)
 
     merged = assemble(snapshot)
+    # Mask PII / secrets before anything is stored or embedded (Phase 10).
+    merged = sanitize.sanitize_snapshot(merged)
     await store.store(merged)
 
     # Index a compact digest for semantic history search (Phase 6). This uses a
@@ -219,8 +247,13 @@ async def get_restore(
 async def get_history(
     workspace: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
+    include_passive: bool = Query(
+        default=False, description="Include continuous observer samples"
+    ),
 ) -> list[HistoryItem]:
-    return await store.history(workspace=workspace, limit=limit)
+    return await store.history(
+        workspace=workspace, limit=limit, include_passive=include_passive
+    )
 
 
 # --------------------------------------------------------------------------
@@ -239,6 +272,236 @@ async def get_search(
     event loop. If the index is unavailable, returns an empty list.
     """
     return await asyncio.to_thread(search_index.search, q, k, workspace)
+
+
+# ==========================================================================
+# Phase 10 — deep profiling, cross-app restoration, daily report, observer
+# ==========================================================================
+def _today() -> str:
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+@app.post("/start-day", response_model=DeepCaptureResponse)
+async def post_start_day(
+    workspace: Optional[str] = Query(default=None, description="Workspace name"),
+    workspace_root: Optional[str] = Query(default=None, description="Workspace path"),
+) -> DeepCaptureResponse:
+    """Deep Start-of-Day capture: git status, open files, active-file excerpt."""
+    snap = await profiler.capture_deep(
+        store, EventType.start_of_day, workspace, workspace_root
+    )
+    if snap is None:
+        return DeepCaptureResponse(
+            status="empty",
+            event_type=EventType.start_of_day,
+            message="No workspace to profile yet — capture an editor snapshot first.",
+        )
+    await manager.to_dashboard(
+        {"type": "day_marker", "event": "start_of_day", "workspace": snap.workspace.name}
+    )
+    return DeepCaptureResponse(event_type=EventType.start_of_day, snapshot=snap)
+
+
+async def _build_daily_report(
+    workspace: Optional[str], captured_end: Optional[Snapshot]
+) -> DailyReportResponse:
+    """Aggregate the day and synthesize the manager report (CPU-gated)."""
+    start = await store.latest_by_event(EventType.start_of_day, workspace)
+    end = captured_end or await store.latest_by_event(EventType.end_of_day, workspace)
+
+    # Aggregate activity across ALL apps (passive samples live under (ambient)),
+    # bounded to the working day between start and end.
+    from datetime import datetime, timezone
+
+    start_ts = start.timestamp.timestamp() if start else (
+        datetime.now(timezone.utc).timestamp() - 24 * 3600
+    )
+    end_ts = end.timestamp.timestamp() if end else datetime.now(timezone.utc).timestamp()
+    activity = await store.snapshots_between(
+        start_ts, end_ts, event_types=("passive_snapshot", "snapshot")
+    )
+
+    ws_name = workspace or (end.workspace.name if end else "") or (start.workspace.name if start else "")
+
+    # Governor: never fight the IDE. Defer synthesis if the host is busy.
+    if await asyncio.to_thread(resource.should_defer):
+        payload = resource.deferred_payload()
+        return DailyReportResponse(
+            status="deferred",
+            message=payload["message"],
+            date=_today(),
+            workspace=ws_name,
+            snapshots_analyzed=len(activity),
+            cpu_percent=payload["cpu_percent"],
+        )
+
+    rpt = await asyncio.to_thread(inference.daily_report, start, activity, end)
+    markdown = inference.report_to_markdown(rpt, date=_today(), workspace=ws_name)
+
+    # Privacy-first cloud push: summary string ONLY (opt-in; no-op if disabled).
+    cloud = await asyncio.to_thread(report.push_report, rpt, markdown, _today(), ws_name)
+
+    await manager.to_dashboard(
+        {"type": "daily_report", "workspace": ws_name, "markdown": markdown}
+    )
+    return DailyReportResponse(
+        status="ok",
+        date=_today(),
+        workspace=ws_name,
+        snapshots_analyzed=len(activity),
+        report=rpt,
+        report_markdown=markdown,
+        cloud=cloud,
+        cpu_percent=round(resource.current(), 1),
+    )
+
+
+@app.post("/end-day", response_model=DailyReportResponse)
+async def post_end_day(
+    workspace: Optional[str] = Query(default=None),
+    workspace_root: Optional[str] = Query(default=None),
+) -> DailyReportResponse:
+    """Deep End-of-Day capture, then generate + sync the manager report."""
+    end = await profiler.capture_deep(
+        store, EventType.end_of_day, workspace, workspace_root
+    )
+    await manager.to_dashboard(
+        {"type": "day_marker", "event": "end_of_day", "workspace": end.workspace.name if end else ""}
+    )
+    return await _build_daily_report(workspace, end)
+
+
+@app.get("/report/daily", response_model=DailyReportResponse)
+async def get_daily_report(
+    workspace: Optional[str] = Query(default=None),
+) -> DailyReportResponse:
+    """Regenerate the end-of-day report from existing captures (no new capture)."""
+    return await _build_daily_report(workspace, None)
+
+
+@app.post("/report/pdf")
+async def post_report_pdf(
+    report_body: DailyReport,
+    date: str = Query(default=""),
+    workspace: str = Query(default=""),
+) -> Response:
+    """Render an already-generated daily report to a downloadable PDF (instant)."""
+    the_date = date or _today()
+    data = await asyncio.to_thread(
+        pdf.render_daily_pdf, report_body, the_date, workspace, config.report_user
+    )
+    filename = f"flowstate-report-{the_date}.pdf"
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _this_month() -> str:
+    from datetime import date as _date
+
+    return _date.today().strftime("%Y-%m")
+
+
+@app.get("/report/monthly")
+async def get_monthly(month: Optional[str] = Query(default=None)) -> dict:
+    """Aggregate the month's stored daily reports (from the durable cloud store)."""
+    return await asyncio.to_thread(report.fetch_monthly, month or _this_month())
+
+
+@app.get("/report/monthly.pdf")
+async def get_monthly_pdf(month: Optional[str] = Query(default=None)) -> Response:
+    """The monthly report as a downloadable PDF."""
+    m = month or _this_month()
+    data = await asyncio.to_thread(report.fetch_monthly, m)
+    if not data.get("available"):
+        raise HTTPException(
+            status_code=400,
+            detail=data.get("reason") or data.get("error") or "monthly report unavailable",
+        )
+    data["month"] = m
+    pdf_bytes = await asyncio.to_thread(pdf.render_monthly_pdf, data)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="flowstate-monthly-{m}.pdf"'},
+    )
+
+
+@app.post("/restore-context", response_model=RestoreContextResponse)
+async def post_restore_context(
+    workspace: Optional[str] = Query(default=None),
+) -> RestoreContextResponse:
+    """Reconstruct what you were doing across apps before the last interruption.
+
+    Reads the flagged pre-interruption buffer (falling back to the recent lookback
+    window), then synthesizes a unified cross-application narrative with the local
+    model. CPU-gated: defers if the host is busy.
+    """
+    snaps = await store.buffered_snapshots()
+    if not snaps:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).timestamp()
+        snaps = await store.snapshots_between(
+            now - config.interruption_buffer_seconds,
+            now,
+            event_types=("passive_snapshot", "snapshot"),
+        )
+
+    interruption_at, _cause = observer.last_interruption()
+
+    if not snaps:
+        return RestoreContextResponse(
+            status="empty",
+            message="No recent cross-application activity to restore.",
+            interruption_at=interruption_at,
+            cpu_percent=round(resource.current(), 1),
+        )
+
+    if await asyncio.to_thread(resource.should_defer):
+        payload = resource.deferred_payload()
+        return RestoreContextResponse(
+            status="deferred",
+            message=payload["message"],
+            interruption_at=interruption_at,
+            events=inference.to_activity_events(snaps),
+            cpu_percent=payload["cpu_percent"],
+        )
+
+    restoration = await asyncio.to_thread(inference.restore_context, snaps)
+    await manager.to_dashboard(
+        {
+            "type": "context_restored",
+            "restoration": restoration.model_dump(),
+        }
+    )
+    return RestoreContextResponse(
+        status="ok",
+        interruption_at=interruption_at,
+        restoration=restoration,
+        events=inference.to_activity_events(snaps),
+        cpu_percent=round(resource.current(), 1),
+    )
+
+
+@app.get("/observer/status", response_model=ObserverStatus)
+async def get_observer_status() -> ObserverStatus:
+    """Live monitoring status for the dashboard card (CPU, active window, idle)."""
+    return await observer.status(store)
+
+
+@app.post("/observer", response_model=ObserverStatus)
+async def set_observer(
+    enabled: bool = Query(..., description="true to run the observer, false to pause"),
+) -> ObserverStatus:
+    """Enable or pause the continuous observer at runtime."""
+    observer.set_enabled(enabled)
+    await manager.to_dashboard({"type": "observer", "enabled": enabled})
+    return await observer.status(store)
 
 
 # --------------------------------------------------------------------------

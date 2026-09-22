@@ -1,7 +1,16 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Clock, MousePointer2, Coffee, LogOut, CalendarClock } from "lucide-react";
+import {
+  Clock,
+  MousePointer2,
+  Coffee,
+  LogOut,
+  CalendarClock,
+  Activity,
+  Video,
+  Lock,
+} from "lucide-react";
 import type { HistoryItem, Trigger } from "@/lib/types";
 
 const TRIGGER_META: Record<Trigger, { icon: any; label: string; color: string }> = {
@@ -9,6 +18,9 @@ const TRIGGER_META: Record<Trigger, { icon: any; label: string; color: string }>
   idle: { icon: Coffee, label: "idle", color: "text-amber-300" },
   focus_loss: { icon: LogOut, label: "focus loss", color: "text-pulse-400" },
   calendar: { icon: CalendarClock, label: "calendar", color: "text-rose-300" },
+  passive: { icon: Activity, label: "observed", color: "text-slate-400" },
+  meeting: { icon: Video, label: "meeting", color: "text-amber-300" },
+  screen_lock: { icon: Lock, label: "locked", color: "text-slate-400" },
 };
 
 export default function Timeline({
