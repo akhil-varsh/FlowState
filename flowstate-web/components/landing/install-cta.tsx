@@ -2,10 +2,11 @@ import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { CodeLine } from "@/components/copy-button";
 
-// Public download URL for the packaged installer. Set NEXT_PUBLIC_DOWNLOAD_URL
-// (e.g. a Supabase Storage public URL) to enable the direct download; when unset
-// the button falls back to the install docs.
-const DOWNLOAD_URL = process.env.NEXT_PUBLIC_DOWNLOAD_URL ?? "";
+// Public download URL for the packaged installer (verified GitHub release).
+// NEXT_PUBLIC_DOWNLOAD_URL overrides it if set.
+const DOWNLOAD_URL =
+  process.env.NEXT_PUBLIC_DOWNLOAD_URL ??
+  "https://github.com/akhil-varsh/FlowState/releases/download/v0.1.0/FlowState-Setup.exe";
 
 const STEPS = [
   {

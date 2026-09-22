@@ -4,6 +4,11 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Download, Shield, Arrow } from "@/components/icons";
 
+// Verified public installer (GitHub Releases). Env var overrides if set.
+const DOWNLOAD_URL =
+  process.env.NEXT_PUBLIC_DOWNLOAD_URL ??
+  "https://github.com/akhil-varsh/FlowState/releases/download/v0.1.0/FlowState-Setup.exe";
+
 export function Hero() {
   const reduce = useReducedMotion();
 
@@ -52,10 +57,10 @@ export function Hero() {
           </motion.p>
 
           <motion.div variants={item} className="mt-8 flex flex-wrap gap-3.5">
-            <Link href="/docs/installation" className="btn btn-primary px-[22px] py-3.5 text-[16px]">
+            <a href={DOWNLOAD_URL} className="btn btn-primary px-[22px] py-3.5 text-[16px]">
               <Download className="h-[18px] w-[18px]" />
               Download for Windows
-            </Link>
+            </a>
             <Link href="/docs" className="btn btn-ghost px-[22px] py-3.5 text-[16px]">
               Read the docs
             </Link>
